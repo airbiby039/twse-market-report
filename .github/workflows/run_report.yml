@@ -10,8 +10,21 @@ on:
   schedule:
     - cron: '30 8 * * 1-5'
 
+# 設定 GitHub Pages 所需的寫入權限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
-  run-report:
+  run-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
 
     steps:
@@ -23,10 +36,11 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 安裝相依套件
+      - name: 安裝相依套件與 Markdown 轉換器
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install markdown
 
       - name: 執行爬蟲報告
         run: |
@@ -36,18 +50,50 @@ jobs:
             python taiwan_market_report_v2.py
           fi
 
-      - name: 在網頁 Summary 直接顯示報告
+      - name: 將最新報告轉為美觀網頁 (index.html)
         run: |
-          if [ -d "reports" ] && [ "$(ls -A reports/*.md 2>/dev/null)" ]; then
-            LATEST_FILE=$(ls -t reports/*.md | head -n 1)
-            cat "$LATEST_FILE" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "找不到產出的報告檔案" >> $GITHUB_STEP_SUMMARY
-          fi
+          mkdir -p public
+          python -c "
+          import glob, os, markdown
+          files = sorted(glob.glob('reports/*.md'), key=os.path.getmtime, reverse=True)
+          if files:
+              with open(files[0], 'r', encoding='utf-8') as f:
+                  text = f.read()
+              body = markdown.markdown(text, extensions=['tables', 'fenced_code'])
+              html = f'''<!DOCTYPE html>
+          <html lang=\"zh-TW\">
+          <head>
+              <meta charset=\"UTF-8\">
+              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+              <title>台股盤後籌碼報告</title>
+              <style>
+                  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; line-height: 1.6; max-width: 900px; margin: 30px auto; padding: 0 20px; color: #24292f; background: #f6f8fa; }}
+                  .card {{ background: #fff; padding: 35px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
+                  table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+                  th, td {{ border: 1px solid #d0d7de; padding: 10px 14px; text-align: left; }}
+                  th {{ background-color: #f6f8fa; font-weight: 600; }}
+                  tr:nth-child(even) {{ background-color: #fcfcfc; }}
+                  tr:hover {{ background-color: #f0f3f6; }}
+                  h1, h2, h3, h4 {{ color: #1f2328; border-bottom: 1px solid #d8dee4; padding-bottom: 8px; }}
+                  blockquote {{ border-left: 4px solid #0969da; margin: 0; padding-left: 12px; color: #57606a; }}
+              </style>
+          </head>
+          <body>
+              <div class=\"card\">{body}</div>
+          </body>
+          </html>'''
+              with open('public/index.html', 'w', encoding='utf-8') as f:
+                  f.write(html)
+          "
 
-      - name: 儲存報告供下載
-        uses: actions/upload-artifact@v4
-        if: always()
+      - name: 設定 GitHub Pages 資源
+        uses: actions/configure-pages@v5
+
+      - name: 上傳網頁 Artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: market-reports
-          path: reports/
+          path: 'public'
+
+      - name: 發布到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
