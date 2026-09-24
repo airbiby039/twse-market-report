@@ -41,3 +41,7 @@ jobs:
         with:
           name: market-reports
           path: reports/
+          - name: 在網頁 Summary 直接顯示報告
+        run: |
+          LATEST_FILE=$(ls -t reports/*.md | head -n 1)
+          cat "$LATEST_FILE" >> $GITHUB_STEP_SUMMARY
