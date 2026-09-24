@@ -1,0 +1,43 @@
+name: 執行台股籌碼報告
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: '指定日期 (YYYY/MM/DD)，留空代表今日'
+        required: false
+        default: ''
+  schedule:
+    - cron: '30 8 * * 1-5'
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 簽出代碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝相依套件
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 執行爬蟲報告
+        run: |
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            python taiwan_market_report_v2.py --date "${{ github.event.inputs.target_date }}"
+          else
+            python taiwan_market_report_v2.py
+          fi
+
+      - name: 儲存報告供下載
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-reports
+          path: reports/
