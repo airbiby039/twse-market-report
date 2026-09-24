@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""台股盤後籌碼報告產生器（TWSE 上市個股）修復版。"""
+"""台股盤後籌碼報告產生器（TWSE 上市個股）v3 整合鉅額交易版。"""
 
 import argparse
 import random
@@ -239,6 +239,48 @@ def fetch_twse_margin_stocks(ad_date):
     return stocks
 
 
+def fetch_twse_block_trades(ad_date):
+    """抓取證交所當日盤後個股鉅額交易明細（依總成交金額由高至低排序）"""
+    url = f"{TWSE_BASE}/rwd/zh/block/BFIAUU?date={ad_date}&selectType=S&response=json"
+    data = fetch_json(url)
+    if not data or data.get("stat") != "OK" or not returned_date_matches(data, ad_date):
+        return []
+
+    fields = data.get("fields", [])
+    index = build_index(fields)
+    trades = []
+
+    for row in data.get("data", []):
+        code_pos = find_index(index, ["證券代號", "股票代號"])
+        name_pos = find_index(index, ["證券名稱", "股票名稱"])
+        if code_pos is None or name_pos is None or max(code_pos, name_pos) >= len(row):
+            continue
+
+        code = str(row[code_pos]).strip()
+        name = str(row[name_pos]).strip()
+        if not code or not name or name in {"合計", "總計"}:
+            continue
+
+        shares = get_value(row, index, ["成交股數"])
+        price = get_value(row, index, ["每股成交價", "成交單價", "成交價格"])
+        amount = get_value(row, index, ["總成交金額", "成交金額"])
+
+        trade_type_pos = find_index(index, ["交易方式", "種類"])
+        trade_type = str(row[trade_type_pos]).strip() if trade_type_pos is not None and trade_type_pos < len(row) else "配對交易"
+
+        trades.append({
+            "code": code,
+            "name": name,
+            "lots": shares / 1000,
+            "price": price,
+            "amount_bill": amount / 1e8,
+            "trade_type": trade_type,
+        })
+
+    trades.sort(key=lambda x: x["amount_bill"], reverse=True)
+    return trades
+
+
 def is_valid_trading_day(ad_date):
     return fetch_twse_market_institutional(ad_date) is not None
 
@@ -304,7 +346,7 @@ def append_rank_table(lines, title, rows, unit, direction):
     lines.append("")
 
 
-def generate_report(trading_days, market_data, institutional_history, margin_data, margin_stocks):
+def generate_report(trading_days, market_data, institutional_history, margin_data, margin_stocks, block_trades):
     current = trading_days[-1]
     lines = [
         f"# 台股盤後籌碼報告 — {current:%Y-%m-%d}",
@@ -330,7 +372,27 @@ def generate_report(trading_days, market_data, institutional_history, margin_dat
                 f"{fmt_bill(item['dealer_prop'], True)} | {fmt_bill(item['dealer_hedge'], True)} | {fmt_bill(item['total'], True)} |"
             )
 
-    lines += ["", "## 二、外資與投信個股買賣超排名（上市 TWSE）", ""]
+    # ---------------- 二、當日盤後鉅額交易清單 ----------------
+    lines += [
+        "",
+        "## 二、當日盤後鉅額交易清單",
+        "",
+        "依成交金額排序（上市市場）：",
+        "",
+        "| 股票代號/名稱 | 成交股數(張) | 每股成交價 | 總成交金額(億元) | 交易方式 |",
+        "|---|---:|---:|---:|---|",
+    ]
+    if not block_trades:
+        lines.append("| 尚無當日鉅額交易資料 | - | - | - | - |")
+    else:
+        for t in block_trades:
+            lines.append(
+                f"| {t['code']} {t['name']} | {t['lots']:,.0f} | {t['price']:.2f} | {t['amount_bill']:.2f} | {t['trade_type']} |"
+            )
+    lines.append("")
+
+    # ---------------- 三、外資與投信排名 ----------------
+    lines += ["## 三、外資與投信個股買賣超排名（上市 TWSE）", ""]
     for investor_name, investor_key in (("外資及陸資", "foreign"), ("投信", "trust")):
         lines += [f"### {investor_name}", ""]
         for period, days in (("當日", 1), ("連續 3 日", 3), ("連續 5 日", 5)):
@@ -341,7 +403,8 @@ def generate_report(trading_days, market_data, institutional_history, margin_dat
             append_rank_table(lines, f"{period}買超前 10 名", ranking["buy"], ranking["unit"], "buy")
             append_rank_table(lines, f"{period}賣超前 10 名", ranking["sell"], ranking["unit"], "sell")
 
-    lines += ["## 三、連續五日融資融券餘額（上市 TWSE）", "", "| 日期 | 融資餘額（億元） | 較前日（億元） | 融資餘額（張） | 較前日（張） | 融券餘額（張） | 較前日（張） |", "|---|---:|---:|---:|---:|---:|---:|"]
+    # ---------------- 四、融資融券餘額 ----------------
+    lines += ["## 四、連續五日融資融券餘額（上市 TWSE）", "", "| 日期 | 融資餘額（億元） | 較前日（億元） | 融資餘額（張） | 較前日（張） | 融券餘額（張） | 較前日（張） |", "|---|---:|---:|---:|---:|---:|---:|"]
     for day in trading_days:
         item = margin_data.get(to_ad_compact(day))
         label = f"{day:%m/%d}（{to_roc(day)}）"
@@ -354,7 +417,8 @@ def generate_report(trading_days, market_data, institutional_history, margin_dat
                 f"{item['short_balance_lots']:,.0f} | {item['short_lots_change']:+,.0f} |"
             )
 
-    lines += ["", "## 四、當日融資融券餘額增減前十名個股（上市 TWSE）", ""]
+    # ---------------- 五、融資融券增減排行 ----------------
+    lines += ["", "## 五、當日融資融券餘額增減前十名個股（上市 TWSE）", ""]
     groups = [
         ("融資餘額增加前 10 名", "margin_change", True),
         ("融資餘額減少前 10 名", "margin_change", False),
@@ -382,7 +446,7 @@ def generate_report(trading_days, market_data, institutional_history, margin_dat
 
 
 def main():
-    parser = argparse.ArgumentParser(description="台股盤後籌碼報告產生器")
+    parser = argparse.ArgumentParser(description="台股盤後籌碼報告產生器 v3")
     parser.add_argument("--date", help="指定最新交易日，格式 YYYY/MM/DD；預設今天")
     parser.add_argument("--output", help="指定 Markdown 輸出路徑")
     args = parser.parse_args()
@@ -407,10 +471,18 @@ def main():
         time.sleep(random.uniform(0.8, 1.5))
 
     current_date = trading_days[-1]
-    print(f"抓取 {current_date:%Y/%m/%d} 個股融資融券資料...")
-    margin_stocks = fetch_twse_margin_stocks(to_ad_compact(current_date))
+    current_compact = to_ad_compact(current_date)
 
-    report = generate_report(trading_days, market_data, institutional_history, margin_data, margin_stocks)
+    print(f"抓取 {current_date:%Y/%m/%d} 個股融資融券資料...")
+    margin_stocks = fetch_twse_margin_stocks(current_compact)
+    time.sleep(random.uniform(0.8, 1.5))
+
+    print(f"抓取 {current_date:%Y/%m/%d} 當日盤後鉅額交易資料...")
+    block_trades = fetch_twse_block_trades(current_compact)
+
+    report = generate_report(
+        trading_days, market_data, institutional_history, margin_data, margin_stocks, block_trades
+    )
     output = Path(args.output) if args.output else REPORT_DIR / f"{current_date:%Y-%m-%d}.md"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report, encoding="utf-8")
