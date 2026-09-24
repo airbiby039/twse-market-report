@@ -261,11 +261,19 @@ def fetch_twse_block_trades(ad_date):
         if not code or not name or name in {"合計", "總計"}:
             continue
 
-        shares = get_value(row, index, ["成交股數"])
-        price = get_value(row, index, ["每股成交價", "成交單價", "成交價格"])
-        amount = get_value(row, index, ["總成交金額", "成交金額"])
+        # 抓取股數與總金額
+        shares = get_value(row, index, ["成交股數", "股數"])
+        amount = get_value(row, index, ["總成交金額", "成交金額", "金額"])
 
-        trade_type_pos = find_index(index, ["交易方式", "種類"])
+        # 擴充每股成交價的候選欄位
+        price = get_value(row, index, ["每股成交價", "成交價格", "成交單價", "每股價格", "單價"])
+        
+        # 防呆機制：若欄位為 0，但有成交金額與股數，直接精準回推每股價格
+        if price == 0.0 and shares > 0 and amount > 0:
+            price = amount / shares
+
+        # 交易方式欄位
+        trade_type_pos = find_index(index, ["交易方式", "種類", "交易種類"])
         trade_type = str(row[trade_type_pos]).strip() if trade_type_pos is not None and trade_type_pos < len(row) else "配對交易"
 
         trades.append({
