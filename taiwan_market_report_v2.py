@@ -209,86 +209,115 @@ def fetch_twse_margin_day(ad_date):
 
 def fetch_twse_margin_stocks(ad_date):
     """抓取證交所當日個股融資融券明細，並計算前日/今日餘額與增減"""
-    # 同時相容 ALL 與 STOCK 參數
-    url = f"{TWSE_BASE}/rwd/zh/marginTrading/MI_MARGN?date={ad_date}&selectType=ALL&response=json"
+
+    url = (
+        f"{TWSE_BASE}/rwd/zh/marginTrading/"
+        f"MI_MARGN?date={ad_date}&selectType=ALL&response=json"
+    )
+
     data = fetch_json(url)
-    if not data or data.get("stat") != "OK" or not returned_date_matches(data, ad_date):
-        # 備援重試另一種常見的 selectType
-        url_alt = f"{TWSE_BASE}/rwd/zh/marginTrading/MI_MARGN?date={ad_date}&selectType=ALLBUT0999&response=json"
-        data = fetch_json(url_alt)
-        if not data or data.get("stat") != "OK" or not returned_date_matches(data, ad_date):
-            return []
 
-    # 1. 解析表格來源（相容 tables 與外層 data 兩種回傳結構）
-    rows = []
-    fields = []
-    if "tables" in data and isinstance(data["tables"], list) and len(data["tables"]) > 0:
-        for t in data["tables"]:
-            f_str = "".join(t.get("fields", []))
-            if "股票代號" in f_str or "證券代號" in f_str:
-                fields = t.get("fields", [])
-                rows = t.get("data", [])
-                break
-    
-    if not rows and "data" in data and isinstance(data["data"], list):
-        rows = data.get("data", [])
-        fields = data.get("fields", [])
-
-    if not rows:
+    if not data:
         return []
 
-    index = build_index(fields)
+    if data.get("stat") != "OK":
+        return []
+
+    if not returned_date_matches(data, ad_date):
+        return []
+
+    # =====================================================
+    # MI_MARGN 的個股資料位於 tables[1]
+    # tables[0] 通常是市場信用交易統計
+    # tables[1] 才是個股融資融券明細
+    # =====================================================
+
+    tables = data.get("tables", [])
+
+    if len(tables) < 2:
+        return []
+
+    table = tables[1]
+
+    fields = table.get("fields", [])
+    rows = table.get("data", [])
+
+    if not fields or not rows:
+        return []
+
+    # -----------------------------------------------------
+    # TWSE 實際欄位：
+    #
+    # 0 代號
+    # 1 名稱
+    # 2 融資買進
+    # 3 融資賣出
+    # 4 融資現金償還
+    # 5 融資前日餘額
+    # 6 融資今日餘額
+    # 7 融資次一營業日限額
+    #
+    # 8  融券買進
+    # 9  融券賣出
+    # 10 融券現券償還
+    # 11 融券前日餘額
+    # 12 融券今日餘額
+    # 13 融券次一營業日限額
+    #
+    # 14 資券互抵
+    # 15 註記
+    # -----------------------------------------------------
+
     stocks = []
 
-    # 2. 定位欄位索引
-    code_pos = find_index(index, ["股票代號", "證券代號"])
-    name_pos = find_index(index, ["股票名稱", "證券名稱"])
-
-    # 融資欄位定位（前日餘額、今日餘額）
-    m_prev_pos = find_index(index, ["融資前日餘額"])
-    m_today_pos = find_index(index, ["融資今日餘額"])
-
-    # 融券欄位定位（前日餘額、今日餘額）
-    s_prev_pos = find_index(index, ["融券前日餘額"])
-    s_today_pos = find_index(index, ["融券今日餘額"])
-
-    # 若抓不到完整名稱，則採用證交所標準欄位順序容錯
-    # [0]代號, [1]名稱, [2]資買, [3]資賣, [4]資現償, [5]資前日, [6]資今日 ... [11]券前日, [12]券今日
-    if m_prev_pos is None: m_prev_pos = 5
-    if m_today_pos is None: m_today_pos = 6
-    if s_prev_pos is None: s_prev_pos = 11
-    if s_today_pos is None: s_today_pos = 12
-
-    max_idx = max(code_pos or 0, name_pos or 1, m_prev_pos, m_today_pos, s_prev_pos, s_today_pos)
-
     for row in rows:
-        if len(row) <= max_idx:
+
+        if len(row) < 13:
             continue
 
-        code = str(row[code_pos]).strip() if code_pos is not None else str(row[0]).strip()
-        name = str(row[name_pos]).strip() if name_pos is not None else str(row[1]).strip()
+        code = str(row[0]).strip()
+        name = str(row[1]).strip()
 
-        # 過濾非個股、合計與異常列
-        if not code or not name or name in {"合計", "總計", "全市場"}:
+        # 排除合計等非個股資料
+        if not code or not name:
             continue
-        # 僅保留常見股票代號（4至6位英文數字）
+
+        if name in {"合計", "總計", "全市場"}:
+            continue
+
+        # 股票代號 / ETF / 特殊代號
         if not re.match(r"^[0-9A-Za-z]{4,6}$", code):
             continue
 
-        margin_prev = parse_num(row[m_prev_pos])
-        margin_today = parse_num(row[m_today_pos])
-        short_prev = parse_num(row[s_prev_pos])
-        short_today = parse_num(row[s_today_pos])
+        # -----------------------------
+        # 融資
+        # -----------------------------
+        margin_prev = parse_num(row[5])
+        margin_today = parse_num(row[6])
+
+        # -----------------------------
+        # 融券
+        # -----------------------------
+        short_prev = parse_num(row[11])
+        short_today = parse_num(row[12])
+
+        # -----------------------------
+        # 計算增減
+        # -----------------------------
+        margin_change = margin_today - margin_prev
+        short_change = short_today - short_prev
 
         stocks.append({
             "code": code,
             "name": name,
+
             "margin_prev": margin_prev,
             "margin_today": margin_today,
-            "margin_change": margin_today - margin_prev,
+            "margin_change": margin_change,
+
             "short_prev": short_prev,
             "short_today": short_today,
-            "short_change": short_today - short_prev,
+            "short_change": short_change,
         })
 
     return stocks
