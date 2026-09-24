@@ -6,7 +6,7 @@ import taiwan_market_report_v2 as twse
 st.set_page_config(page_title="台股盤後籌碼報告", layout="wide")
 
 st.title("📈 台股盤後籌碼報告（TWSE 上市）")
-st.caption("透過 TWSE 官方公開數據即時產生盤後法人與融資券分析")
+st.caption("透過 TWSE 官方公開數據即時產生盤後法人、融資券與鉅額交易分析")
 
 # 側邊欄控制項
 with st.sidebar:
@@ -34,13 +34,15 @@ if run_button:
                 institutional_history[ad_date] = twse.fetch_twse_institutional_stocks(ad_date)
                 margin_data[ad_date] = twse.fetch_twse_margin_day(ad_date)
 
-            # 3. 抓取個股融資券
+            # 3. 抓取個股融資券與當日盤後鉅額交易
             current_date = trading_days[-1]
-            margin_stocks = twse.fetch_twse_margin_stocks(twse.to_ad_compact(current_date))
+            current_compact = twse.to_ad_compact(current_date)
+            margin_stocks = twse.fetch_twse_margin_stocks(current_compact)
+            block_trades = twse.fetch_twse_block_trades(current_compact)
 
-            # 4. 產生報告內容
+            # 4. 產生報告內容（包含鉅額交易清單）
             report_markdown = twse.generate_report(
-                trading_days, market_data, institutional_history, margin_data, margin_stocks
+                trading_days, market_data, institutional_history, margin_data, margin_stocks, block_trades
             )
 
             st.success(f"✅ 報告產生成功！（最新有效交易日：{current_date.strftime('%Y/%m/%d')}）")
