@@ -36,12 +36,13 @@ jobs:
             python taiwan_market_report_v2.py
           fi
 
+      - name: 在網頁 Summary 直接顯示報告
+        run: |
+          LATEST_FILE=$(ls -t reports/*.md | head -n 1)
+          cat "$LATEST_FILE" >> $GITHUB_STEP_SUMMARY
+
       - name: 儲存報告供下載
         uses: actions/upload-artifact@v4
         with:
           name: market-reports
           path: reports/
-          - name: 在網頁 Summary 直接顯示報告
-        run: |
-          LATEST_FILE=$(ls -t reports/*.md | head -n 1)
-          cat "$LATEST_FILE" >> $GITHUB_STEP_SUMMARY
