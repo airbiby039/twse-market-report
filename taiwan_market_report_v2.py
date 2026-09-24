@@ -208,34 +208,63 @@ def fetch_twse_margin_day(ad_date):
 
 
 def fetch_twse_margin_stocks(ad_date):
+    """抓取證交所當日個股融資融券明細，並計算前日/今日餘額與增減"""
     url = f"{TWSE_BASE}/rwd/zh/marginTrading/MI_MARGN?date={ad_date}&selectType=STOCK&response=json"
     data = fetch_json(url)
     if not data or data.get("stat") != "OK" or not returned_date_matches(data, ad_date):
         return []
 
     tables = data.get("tables", [])
-    stock_table = next((table for table in tables if "股票代號" in " ".join(table.get("fields", []))), None)
+    stock_table = None
+    for t in tables:
+        fields_str = "".join(t.get("fields", []))
+        if "股票代號" in fields_str or "證券代號" in fields_str:
+            stock_table = t
+            break
+
     if not stock_table:
         return []
 
-    index = build_index(stock_table.get("fields", []))
+    raw_fields = stock_table.get("fields", [])
+    index = build_index(raw_fields)
     stocks = []
+
+    code_pos = find_index(index, ["股票代號", "證券代號"])
+    name_pos = find_index(index, ["股票名稱", "證券名稱"])
+
+    m_prev_pos = find_index(index, ["融資前日餘額", "前日餘額"]) or 5
+    m_today_pos = find_index(index, ["融資今日餘額", "今日餘額"]) or 6
+    s_prev_pos = find_index(index, ["融券前日餘額"]) or 11
+    s_today_pos = find_index(index, ["融券今日餘額"]) or 12
+
     for row in stock_table.get("data", []):
-        code = str(row[find_index(index, ["股票代號", "證券代號"])]).strip()
-        name = str(row[find_index(index, ["股票名稱", "證券名稱"])]).strip()
-        if not code or not name or name in {"合計", "總計"}:
+        if len(row) <= max(code_pos or 0, name_pos or 1, m_today_pos, s_today_pos):
             continue
-        margin_prev = get_value(row, index, ["融資前日餘額"])
-        margin_today = get_value(row, index, ["融資今日餘額"])
-        short_prev = get_value(row, index, ["融券前日餘額"])
-        short_today = get_value(row, index, ["融券今日餘額"])
+
+        code = str(row[code_pos]).strip() if code_pos is not None else str(row[0]).strip()
+        name = str(row[name_pos]).strip() if name_pos is not None else str(row[1]).strip()
+
+        if not code or not name or name in {"合計", "總計", "全市場"}:
+            continue
+        if not re.match(r"^[0-9A-Za-z]{4,6}$", code):
+            continue
+
+        margin_prev = parse_num(row[m_prev_pos])
+        margin_today = parse_num(row[m_today_pos])
+        short_prev = parse_num(row[s_prev_pos])
+        short_today = parse_num(row[s_today_pos])
+
         stocks.append({
-            "code": code, "name": name,
-            "margin_prev": margin_prev, "margin_today": margin_today,
+            "code": code,
+            "name": name,
+            "margin_prev": margin_prev,
+            "margin_today": margin_today,
             "margin_change": margin_today - margin_prev,
-            "short_prev": short_prev, "short_today": short_today,
+            "short_prev": short_prev,
+            "short_today": short_today,
             "short_change": short_today - short_prev,
         })
+
     return stocks
 
 
