@@ -38,11 +38,16 @@ jobs:
 
       - name: 在網頁 Summary 直接顯示報告
         run: |
-          LATEST_FILE=$(ls -t reports/*.md | head -n 1)
-          cat "$LATEST_FILE" >> $GITHUB_STEP_SUMMARY
+          if [ -d "reports" ] && [ "$(ls -A reports/*.md 2>/dev/null)" ]; then
+            LATEST_FILE=$(ls -t reports/*.md | head -n 1)
+            cat "$LATEST_FILE" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "找不到產出的報告檔案" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: 儲存報告供下載
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: market-reports
           path: reports/
